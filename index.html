@@ -1,0 +1,1221 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Three.js Example</title>
+    <script
+      async
+      src="https://unpkg.com/es-module-shims@1.3.6/dist/es-module-shims.js"
+    ></script>
+
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://unpkg.com/three@0.154.0/build/three.module.js",
+          "three/addons/": "https://unpkg.com/three@0.154.0/examples/jsm/",
+          "@pixiv/three-vrm": "/lib/three-vrm.module.js"
+        }
+      }
+    </script>
+    <style>
+      body {
+        margin: 0;
+      }
+      canvas {
+        display: block;
+      }
+    </style>
+  </head>
+
+  <body>
+    <!-- <canvas id="canvas" style="width: 1139px; height: 1111px"> </canvas> -->
+
+    <script type="module">
+      import * as THREE from "three";
+      import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+      import { BVHLoader } from "three/addons/loaders/BVHLoader.js";
+      import {
+        VRMLoaderPlugin,
+        VRMUtils,
+        VRM,
+        VRMExpression,
+        VRMExpressionMorphTargetBind,
+      } from "@pixiv/three-vrm";
+
+      function createState(initialState) {
+        let state = initialState; // Initial state
+
+        function getState() {
+          return state;
+        }
+
+        function setState(newState) {
+          state = newState;
+        }
+
+        return {
+          getState,
+          setState,
+        };
+      }
+
+      function loadFile(filename) {
+        return new Promise((resolve, reject) => {
+          const loader = new THREE.FileLoader();
+
+          loader.load(filename, (data) => {
+            resolve(data);
+          });
+        });
+      }
+      loadFile("shaders/utils.glsl").then((utils) => {
+        THREE.ShaderChunk["utils"] = utils;
+
+        const cubetextureloader = new THREE.CubeTextureLoader();
+        const textureCube = cubetextureloader.load([
+          "xpos.jpg",
+          "xneg.jpg",
+          "ypos.jpg",
+          "ypos.jpg",
+          "zpos.jpg",
+          "zneg.jpg",
+        ]);
+
+        const textureloader = new THREE.TextureLoader();
+
+        const tiles = textureloader.load("tiles.jpg");
+
+        const black = new THREE.Color("black");
+        const white = new THREE.Color("white");
+        const light2 = [
+          0.7559289460184544, 0.7559289460184544, -0.3779644730092272,
+        ];
+
+        // Usage
+        const showBackgroundImageState = createState({
+          showBackgroundImage: true,
+        });
+
+        let mixer = null;
+        let joinSpringManager = null;
+        let currentVrm = undefined;
+        let animationClip;
+        // let clock = new THREE.Clock();
+        let mapAction = new Map();
+        let currentBvhFilePath = "";
+        let currentBackgroundImage = "";
+        let playing = false;
+        let currentFacial = "";
+        let listData = null;
+        const listBackground = ["day", "night"];
+
+        const parameterBlink = [
+          {
+            blink: 0,
+            blinkLeft: 1,
+            blinkRight: 1,
+          },
+          {
+            blink: 0,
+            blinkLeft: 0,
+            blinkRight: 1,
+          },
+          {
+            blink: 1,
+            blinkLeft: 0,
+            blinkRight: 0,
+          },
+        ];
+
+        const width = window.innerWidth; //ブラウザの横の長さ
+        const height = window.innerHeight;
+
+        const queryString = window.location.search;
+
+        const urlParams = new URLSearchParams(queryString);
+        console.log("idolCode", urlParams);
+
+        const idolCode = urlParams.get("idolCode");
+        const speedAnimate = urlParams.get("speedAnimate")
+          ? urlParams.get("speedAnimate")
+          : 0.02;
+        const ratioAnimate = urlParams.get("ratioAnimate")
+          ? urlParams.get("ratioAnimate")
+          : 1;
+        console.log("idolCode", `/models/${idolCode}.vrm`);
+        console.log("speedAnimate", speedAnimate);
+        console.log("ratioAnimate", ratioAnimate);
+        // const mapBVHFile = new Map();
+        const imageFile = new Map();
+        var scene = new THREE.Scene();
+        var camera = new THREE.PerspectiveCamera(
+          45,
+          window.innerWidth / window.innerHeight,
+          0.01,
+          1000
+        );
+        camera.position.set(0, 1.3, -1.45);
+        camera.rotation.set(0, Math.PI, 0);
+
+        let now = new Date(new Date().toUTCString());
+        var japanTime = addHours(now, 9);
+        let currentTypeHour = getCurrentTypeHour(japanTime);
+        const renderer = new THREE.WebGLRenderer({
+          alpha: true,
+          antialias: true,
+          transparent: true,
+        });
+
+        renderer.setPixelRatio(window.devicePixelRatio);
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+        // changeBackground();
+        updateCurrentBackground(`${idolCode}_${currentTypeHour}`);
+
+        const targetAspect =
+          document.body.clientWidth / document.body.clientHeight;
+        function updateCurrentBackground(name) {
+          if (currentBackgroundImage != name) {
+            if (imageFile.get(name)) {
+              let texture = imageFile.get(name);
+              const imageAspect = texture.image.width / texture.image.height;
+              const factor = imageAspect / targetAspect;
+              scene.background = texture;
+              scene.background.offset.x = factor > 1 ? (1 - 1 / factor) / 2 : 0;
+              scene.background.repeat.x = factor > 1 ? 1 / factor : 1;
+              scene.background.offset.y = factor > 1 ? 0 : (1 - factor) / 2;
+              scene.background.repeat.y = factor > 1 ? 1 : factor;
+              currentBackgroundImage = name;
+            } else {
+              new THREE.TextureLoader().load(`/img/${name}.png`, (texture) => {
+                imageFile.set(name, texture);
+                const imageAspect = texture.image.width / texture.image.height;
+                const factor = imageAspect / targetAspect;
+                scene.background = texture;
+                scene.background.offset.x =
+                  factor > 1 ? (1 - 1 / factor) / 2 : 0;
+                scene.background.repeat.x = factor > 1 ? 1 / factor : 1;
+                scene.background.offset.y = factor > 1 ? 0 : (1 - factor) / 2;
+                scene.background.repeat.y = factor > 1 ? 1 : factor;
+              });
+            }
+            currentBackgroundImage = name;
+          }
+        }
+
+        function updateFacial(facial, currentMotion) {
+          if (currentVrm && currentVrm.expressionManager) {
+            const value = 0.35;
+            if (currentFacial != facial) {
+              resetEmotion();
+              switch (facial) {
+                case "neutral":
+                  currentVrm.expressionManager.setValue("neutral", value);
+                  currentVrm.expressionManager.setValue("relaxed", 0);
+                  currentVrm.expressionManager.setValue("happy", 0);
+                  currentVrm.expressionManager.setValue("Surprised", 0);
+                  break;
+                case "relaxed":
+                  currentVrm.expressionManager.setValue("neutral", value);
+                  currentVrm.expressionManager.setValue("relaxed", 0);
+                  currentVrm.expressionManager.setValue("happy", 0);
+                  currentVrm.expressionManager.setValue("Surprised", 0);
+                  break;
+                case "happy":
+                  currentVrm.expressionManager.setValue("neutral", 0);
+                  currentVrm.expressionManager.setValue("relaxed", 0);
+                  currentVrm.expressionManager.setValue("happy", value);
+                  currentVrm.expressionManager.setValue("Surprised", 0);
+                  break;
+                case "Surprised":
+                  currentVrm.expressionManager.setValue("neutral", 0);
+                  currentVrm.expressionManager.setValue("relaxed", 0);
+                  currentVrm.expressionManager.setValue("happy", 0);
+                  currentVrm.expressionManager.setValue("Surprised", value);
+                  break;
+                default:
+                  currentFacial = facial;
+                  console.log("currentFacial", currentFacial);
+              }
+            }
+          }
+        }
+
+        const light = new THREE.DirectionalLight(0xffffff);
+        light.position.set(-1, 1, -1).normalize();
+        scene.add(light);
+
+        class WaterSimulation {
+          constructor() {
+            this._camera = new THREE.OrthographicCamera(2000, 1, 1, 0, 0, 2000);
+
+            this._geometry = new THREE.PlaneGeometry(2, 0);
+
+            this._textureA = new THREE.WebGLRenderTarget(256, 256, {
+              type: THREE.FloatType,
+            });
+            this._textureB = new THREE.WebGLRenderTarget(256, 256, {
+              type: THREE.FloatType,
+            });
+            this.texture = this._textureA;
+
+            const shadersPromises = [
+              loadFile("shaders/simulation/vertex.glsl"),
+              loadFile("shaders/simulation/drop_fragment.glsl"),
+              loadFile("shaders/simulation/normal_fragment.glsl"),
+              loadFile("shaders/simulation/update_fragment.glsl"),
+            ];
+
+            this.loaded = Promise.all(shadersPromises).then(
+              ([
+                vertexShader,
+                dropFragmentShader,
+                normalFragmentShader,
+                updateFragmentShader,
+              ]) => {
+                const dropMaterial = new THREE.RawShaderMaterial({
+                  uniforms: {
+                    center: { value: [0, 0] },
+                    radius: { value: 0 },
+                    strength: { value: 0 },
+                    texture: { value: null },
+                  },
+                  vertexShader: normalFragmentShader,
+                  fragmentShader: dropFragmentShader,
+                });
+
+                const normalMaterial = new THREE.RawShaderMaterial({
+                  uniforms: {
+                    delta: { value: [1 / 256, 1 / 256] }, // TODO: Remove this useless uniform and hardcode it in shaders?
+                    texture: { value: null },
+                  },
+                  vertexShader: vertexShader,
+                  fragmentShader: normalFragmentShader,
+                });
+
+                const updateMaterial = new THREE.RawShaderMaterial({
+                  uniforms: {
+                    delta: { value: [1 / 256, 1 / 256] }, // TODO: Remove this useless uniform and hardcode it in shaders?
+                    texture: { value: null },
+                  },
+                  vertexShader: vertexShader,
+                  fragmentShader: updateFragmentShader,
+                });
+
+                this._dropMesh = new THREE.Mesh(this._geometry, dropMaterial);
+                this._normalMesh = new THREE.Mesh(
+                  this._geometry,
+                  normalMaterial
+                );
+                this._updateMesh = new THREE.Mesh(
+                  this._geometry,
+                  updateMaterial
+                );
+              }
+            );
+          }
+
+          // Add a drop of water at the (x, y) coordinate (in the range [-1, 1])
+          addDrop(renderer, x, y, radius, strength) {
+            this._dropMesh.material.uniforms["center"].value = [x, y];
+            this._dropMesh.material.uniforms["radius"].value = radius;
+            this._dropMesh.material.uniforms["strength"].value = strength;
+
+            this._render(renderer, this._dropMesh);
+          }
+
+          stepSimulation(renderer) {
+            this._render(renderer, this._updateMesh);
+          }
+
+          updateNormals(renderer) {
+            this._render(renderer, this._normalMesh);
+          }
+
+          _render(renderer, mesh) {
+            // Swap textures
+            const oldTexture = this.texture;
+            const newTexture =
+              this.texture === this._textureA ? this._textureB : this._textureA;
+
+            mesh.material.uniforms["texture"].value = oldTexture.texture;
+
+            renderer.setRenderTarget(newTexture);
+
+            // TODO Camera is useless here, what should be done?
+            // renderer.render(mesh, this._camera);
+            // renderer.render(mesh, camera);
+
+            this.texture = newTexture;
+          }
+        }
+
+        class Caustics {
+          constructor(lightFrontGeometry) {
+            this._camera = new THREE.OrthographicCamera(0, 1, 1, 0, 0, 2000);
+
+            this._geometry = lightFrontGeometry;
+
+            this.texture = new THREE.WebGLRenderTarget(1024, 1024, {
+              type: THREE.UNSIGNED_BYTE,
+            });
+
+            const shadersPromises = [
+              loadFile("shaders/caustics/vertex.glsl"),
+              loadFile("shaders/caustics/fragment.glsl"),
+            ];
+
+            this.loaded = Promise.all(shadersPromises).then(
+              ([vertexShader, fragmentShader]) => {
+                const material = new THREE.RawShaderMaterial({
+                  uniforms: {
+                    light: { value: light },
+                    water: { value: null },
+                  },
+                  vertexShader: vertexShader,
+                  fragmentShader: fragmentShader,
+                });
+
+                this._causticMesh = new THREE.Mesh(this._geometry, material);
+              }
+            );
+          }
+
+          update(renderer, waterTexture) {
+            this._causticMesh.material.uniforms["water"].value = waterTexture;
+
+            renderer.setRenderTarget(this.texture);
+            renderer.setClearColor(black, 0);
+            renderer.clear();
+            console.log(this._causticMesh, "caustic mesh");
+            // TODO Camera is useless here, what should be done?
+            renderer.render(this._causticMesh, this._camera);
+          }
+        }
+
+        class Water {
+          constructor() {
+            this.geometry = new THREE.PlaneGeometry(2, 2, 200, 200);
+
+            const shadersPromises = [
+              loadFile("shaders/water/vertex.glsl"),
+              loadFile("shaders/water/fragment.glsl"),
+            ];
+
+            this.loaded = Promise.all(shadersPromises).then(
+              ([vertexShader, fragmentShader]) => {
+                this.material = new THREE.RawShaderMaterial({
+                  uniforms: {
+                    light: { value: light2 },
+                    tiles: { value: tiles },
+                    sky: { value: textureCube },
+                    water: { value: null },
+                    causticTex: { value: null },
+                    underwater: { value: false },
+                  },
+                  vertexShader: vertexShader,
+                  fragmentShader: fragmentShader,
+                });
+
+                this.mesh = new THREE.Mesh(this.geometry, this.material);
+              }
+            );
+          }
+
+          draw(renderer, waterTexture, causticsTexture) {
+            this.material.uniforms["water"].value = waterTexture;
+            this.material.uniforms["causticTex"].value = causticsTexture;
+
+            this.material.side = THREE.FrontSide;
+            this.material.uniforms["underwater"].value = true;
+            renderer.render(this.mesh, camera);
+
+            this.material.side = THREE.BackSide;
+            this.material.uniforms["underwater"].value = false;
+            renderer.render(this.mesh, camera);
+          }
+        }
+
+        class Pool {
+          constructor() {
+            this._geometry = new THREE.BufferGeometry();
+            const vertices = new Float32Array([
+              -1, -1, -1, -1, -1, 1, -1, 1, -1, -1, 1, 1, 1, -1, -1, 1, 1, -1,
+              1, -1, 1, 1, 1, 1, -1, -1, -1, 1, -1, -1, -1, -1, 1, 1, -1, 1, -1,
+              1, -1, -1, 1, 1, 1, 1, -1, 1, 1, 1, -1, -1, -1, -1, 1, -1, 1, -1,
+              -1, 1, 1, -1, -1, -1, 1, 1, -1, 1, -1, 1, 1, 1, 1, 1,
+            ]);
+            const indices = new Uint32Array([
+              0, 1, 2, 2, 1, 3, 4, 5, 6, 6, 5, 7, 12, 13, 14, 14, 13, 15, 16,
+              17, 18, 18, 17, 19, 20, 21, 22, 22, 21, 23,
+            ]);
+
+            this._geometry.setAttribute(
+              "position",
+              new THREE.BufferAttribute(vertices, 3)
+            );
+            this._geometry.setIndex(new THREE.BufferAttribute(indices, 1));
+
+            const shadersPromises = [
+              loadFile("shaders/pool/vertex.glsl"),
+              loadFile("shaders/pool/fragment.glsl"),
+            ];
+
+            this.loaded = Promise.all(shadersPromises).then(
+              ([vertexShader, fragmentShader]) => {
+                this._material = new THREE.RawShaderMaterial({
+                  uniforms: {
+                    light: { value: light2 },
+                    tiles: { value: tiles },
+                    water: { value: null },
+                    causticTex: { value: null },
+                  },
+                  vertexShader: vertexShader,
+                  fragmentShader: fragmentShader,
+                });
+                this._material.side = THREE.FrontSide;
+
+                this._mesh = new THREE.Mesh(this._geometry, this._material);
+              }
+            );
+          }
+
+          draw(renderer, waterTexture, causticsTexture) {
+            this._material.uniforms["water"].value = waterTexture;
+            this._material.uniforms["causticTex"].value = causticsTexture;
+
+            renderer.render(this._mesh, camera);
+          }
+        }
+
+        const waterSimulation = new WaterSimulation();
+        const water = new Water();
+        const caustics = new Caustics(water.geometry);
+        const pool = new Pool();
+
+        function animateWater() {
+          waterSimulation.stepSimulation(renderer);
+          (async () => {
+            console.log("Startted stepSimulation");
+            await waterSimulation.stepSimulation(renderer);
+            console.log("stepSimulation");
+          })();
+
+          (async () => {
+            waterSimulation.updateNormals(renderer);
+            console.log("updateNormals");
+          })();
+          // waterSimulation.addDrop(renderer, 0, 0, 0.1, 0.1);
+          const causticsTexture = caustics.texture.texture;
+          renderer.setRenderTarget(null);
+          renderer.setClearColor(white, 1);
+          renderer.clear();
+          (async () => {
+            const waterTexture = waterSimulation.texture.texture;
+            water.draw(renderer, waterTexture, causticsTexture);
+            pool.draw(renderer, waterTexture, causticsTexture);
+
+            console.log("updateCaustics");
+          })();
+
+          window.requestAnimationFrame(animate);
+        }
+
+        function changeBackground() {
+          const loaded = [
+            waterSimulation.loaded,
+            caustics.loaded,
+            water.loaded,
+            pool.loaded,
+          ];
+
+          Promise.all(loaded).then(() => {
+            for (var i = 0; i < 20; i++) {
+              waterSimulation.addDrop(
+                renderer,
+                Math.random() * 2 - 1,
+                Math.random() * 2 - 1,
+                0.03,
+                i & 1 ? 0.02 : -0.02
+              );
+            }
+            animateWater();
+          });
+
+          console.log("changeBackground");
+          const yStart = 1.0;
+          const yEnd = 1.8;
+          const xMax = -0.3;
+          const xStart = 0;
+          const xMin = 0.3;
+          const lengthBefore = 200;
+          const lengthAfter = 200;
+          const planeAfter = [];
+          const planeBefore = [];
+
+          for (let i = 0; i < lengthBefore; i++) {
+            const geometry = new THREE.SphereGeometry(0.01, 32, 16);
+
+            var material = new THREE.MeshBasicMaterial({
+              color: 0xcccccc,
+              opacity: 0.5,
+              transparent: true,
+            });
+
+            planeBefore[i] = new THREE.Mesh(geometry, material);
+            planeBefore[i].position.x = random(xMin, xMax);
+            planeBefore[i].position.y = yStart + random(-0.5, 0);
+            planeBefore[i].position.z = random(-0.4, -1);
+            scene.add(planeBefore[i]);
+          }
+          for (let i = 0; i < lengthAfter; i++) {
+            let geometry = new THREE.SphereGeometry(0.1, 32, 16);
+            var material = new THREE.MeshBasicMaterial({
+              color: 0xcccccc,
+              opacity: 0.5,
+              transparent: true,
+            });
+
+            planeAfter[i] = new THREE.Mesh(geometry, material);
+            planeAfter[i].position.x = random(-2, 2);
+            planeAfter[i].position.y = random(-5, -2);
+            planeAfter[i].position.z = random(3, 10);
+            scene.add(planeAfter[i]);
+          } // Animate the scene
+          function random(min, max) {
+            let rand = min + (max - min) * Math.random();
+            return rand;
+          }
+          function tick() {
+            for (let i = 0; i < lengthBefore; i++) {
+              planeBefore[i].position.x += random(0.0005, -0.0005);
+              planeBefore[i].position.y += random(0.002, 0.006);
+              planeBefore[i].position.z += 0;
+              if (planeBefore[i].position.y > yEnd) {
+                planeBefore[i].position.x = xStart + random(xMin, xMax);
+                planeBefore[i].position.y = yStart + random(-0.5, 0);
+                planeBefore[i].position.z = random(-0.4, -1);
+              }
+            }
+            for (let i = 0; i < lengthAfter; i++) {
+              planeAfter[i].position.x += random(0, -0.01);
+              planeAfter[i].position.y += 0.05;
+              planeAfter[i].position.z += 0;
+              if (planeAfter[i].position.y > 6.0) {
+                planeAfter[i].position.x = random(-2, 2);
+                planeAfter[i].position.y = random(-5, -2);
+                planeAfter[i].position.z = random(5, 10);
+              }
+            }
+            renderer.render(scene, camera);
+            requestAnimationFrame(tick);
+          }
+          tick(); // Start animation loop                            // Handle window resize
+          function onResize() {
+            // Update renderer size
+            const width = window.innerWidth;
+            const height = window.innerHeight;
+            renderer.setPixelRatio(window.devicePixelRatio);
+            renderer.setSize(width, height); // Update camera aspect ratio
+            camera.aspect = width / height;
+            camera.updateProjectionMatrix();
+          } // Listen for window resize event
+          window.addEventListener("resize", onResize); // Call onResize initially to set up the scene
+          onResize();
+        }
+
+        const fold = (reducer, init, xs) => {
+          let acc = init;
+          for (const x of xs) {
+            acc = reducer(acc, x);
+          }
+          return acc;
+        };
+        window.addEventListener(
+          "dataDetail",
+          (result) => {
+            try {
+              var data = result.detail;
+              var currentMotion = data.motion;
+              if (currentMotion) {
+                console.log("dataDetail", currentMotion);
+                applyAnimation(`/bvh/${currentMotion}.bvh`);
+              }
+              var currentBackground = data.currentBackground;
+              if (currentBackground) {
+                updateCurrentBackground(`${idolCode}_${currentBackground}`);
+              }
+
+              var facial = data.facial;
+              if (facial) {
+                updateFacial(facial, currentMotion);
+              }
+            } catch (e) {
+              console.log(e);
+            }
+          },
+          false
+        );
+
+        window.addEventListener(
+          "startPlaying",
+          (result) => {
+            var data = result.detail;
+
+            var mora = data.mora;
+            console.log(mora);
+            var currentTimeVoice = data.currentTime;
+            console.log("currentTimeVoice", currentTimeVoice);
+            if (mora) {
+              playing = true;
+              Object.keys(mora).forEach(function (key, index) {
+                if (parseFloat(currentTimeVoice) < parseFloat(key)) {
+                  setTimeout(() => {
+                    if (playing) {
+                      voice(mora[key]);
+                    }
+                  }, parseFloat(key) - parseFloat(currentTimeVoice));
+                }
+              });
+            }
+            if (currentFacial != "" && currentFacial.includes("Param")) {
+              resetBlink();
+            } else {
+              randomBlink();
+            }
+          },
+          false
+        );
+
+        window.addEventListener(
+          "setParams",
+          (result) => {
+            console.log("setParams");
+            var data = result.detail;
+
+            var params = data.param;
+
+            listData = params;
+            if (currentVrm) {
+              updateExpression();
+            }
+            console.log(listData);
+          },
+          false
+        );
+
+        window.addEventListener(
+          "endPlaying",
+          (event) => {
+            console.log("endPlaying");
+            playing = false;
+            resetBlink();
+            if (currentFacial != "" && currentFacial.includes("Param")) {
+              resetParam(currentFacial);
+            } else {
+              setTimeout(() => {
+                currentVrm.expressionManager.setValue("aa", 0);
+                currentVrm.expressionManager.setValue("ih", 0);
+                currentVrm.expressionManager.setValue("oh", 0);
+                currentVrm.expressionManager.setValue("ee", 0);
+                currentVrm.expressionManager.setValue("ou", 0);
+              }, 0);
+            }
+          },
+          false
+        );
+
+        loadVrm();
+        function loadVrm() {
+          const loader = new GLTFLoader();
+          loader.register((parser) => {
+            return new VRMLoaderPlugin(parser);
+          });
+
+          loader.load(
+            `/models/${idolCode}.vrm`,
+            (gltf) => {
+              const vrm = gltf.userData.vrm;
+              VRMUtils.removeUnnecessaryVertices(gltf.scene);
+              VRMUtils.removeUnnecessaryJoints(gltf.scene);
+              // Disable frustum culling
+              vrm.scene.traverse((obj) => {
+                obj.frustumCulled = false;
+              });
+              vrm.scene.renderOrder = -21;
+
+              scene.add(vrm.scene);
+              console.log("vrm added to the scene ..................");
+              currentVrm = vrm;
+              updateExpression();
+              joinSpringManager = vrm.springBoneManager;
+              if (currentVrm) {
+                applyAnimation("/bvh/start.bvh", "waiting");
+              }
+              // setTimeout(() => {
+              //   console.log("success");
+              // }, 3000);
+              changeBackground();
+            },
+            (progress) => {},
+            (error) => console.log("error121231", error)
+          );
+        }
+
+        function updateExpression() {
+          if (listData != null) {
+            if (
+              currentVrm.firstPerson.meshAnnotations &&
+              currentVrm.firstPerson.meshAnnotations.length > 0
+            ) {
+              for (const meshAnnotation of currentVrm.firstPerson
+                .meshAnnotations) {
+                if (
+                  meshAnnotation.meshes &&
+                  meshAnnotation.meshes[0].name.includes("Face")
+                ) {
+                  var listSkinFaceMesh = meshAnnotation.meshes;
+                  Object.keys(listData).forEach(function (key, index) {
+                    var listSkin = listData[key];
+                    var expressionA =
+                      currentVrm.expressionManager.getExpression(`${key}A`);
+                    var expressionI =
+                      currentVrm.expressionManager.getExpression(`${key}I`);
+                    var expressionU =
+                      currentVrm.expressionManager.getExpression(`${key}U`);
+                    var expressionE =
+                      currentVrm.expressionManager.getExpression(`${key}E`);
+                    var expressionO =
+                      currentVrm.expressionManager.getExpression(`${key}O`);
+                    var vrmNewExpressionA = new VRMExpression(`${key}A`);
+                    var vrmNewExpressionI = new VRMExpression(`${key}I`);
+                    var vrmNewExpressionU = new VRMExpression(`${key}U`);
+                    var vrmNewExpressionE = new VRMExpression(`${key}E`);
+                    var vrmNewExpressionO = new VRMExpression(`${key}O`);
+                    listSkin.forEach((item) => {
+                      var index = item.index;
+                      var weight = item.weight;
+                      if (index < 39 || index > 42) {
+                        vrmNewExpressionA.addBind(
+                          new VRMExpressionMorphTargetBind({
+                            index,
+                            primitives: listSkinFaceMesh,
+                            weight,
+                          })
+                        );
+                        vrmNewExpressionE.addBind(
+                          new VRMExpressionMorphTargetBind({
+                            index,
+                            primitives: listSkinFaceMesh,
+                            weight,
+                          })
+                        );
+                        vrmNewExpressionI.addBind(
+                          new VRMExpressionMorphTargetBind({
+                            index,
+                            primitives: listSkinFaceMesh,
+                            weight,
+                          })
+                        );
+                        vrmNewExpressionO.addBind(
+                          new VRMExpressionMorphTargetBind({
+                            index,
+                            primitives: listSkinFaceMesh,
+                            weight,
+                          })
+                        );
+                        vrmNewExpressionU.addBind(
+                          new VRMExpressionMorphTargetBind({
+                            index,
+                            primitives: listSkinFaceMesh,
+                            weight,
+                          })
+                        );
+                      }
+                    });
+                    vrmNewExpressionA.addBind(
+                      new VRMExpressionMorphTargetBind({
+                        index: 39,
+                        primitives: listSkinFaceMesh,
+                        weight: 1,
+                      })
+                    );
+                    vrmNewExpressionE.addBind(
+                      new VRMExpressionMorphTargetBind({
+                        index: 42,
+                        primitives: listSkinFaceMesh,
+                        weight: 1,
+                      })
+                    );
+                    vrmNewExpressionI.addBind(
+                      new VRMExpressionMorphTargetBind({
+                        index: 40,
+                        primitives: listSkinFaceMesh,
+                        weight: 1,
+                      })
+                    );
+                    vrmNewExpressionO.addBind(
+                      new VRMExpressionMorphTargetBind({
+                        index: 43,
+                        primitives: listSkinFaceMesh,
+                        weight: 1,
+                      })
+                    );
+                    vrmNewExpressionU.addBind(
+                      new VRMExpressionMorphTargetBind({
+                        index: 41,
+                        primitives: listSkinFaceMesh,
+                        weight: 1,
+                      })
+                    );
+                    if (expressionA) {
+                      currentVrm.expressionManager.unregisterExpression(
+                        expressionA
+                      );
+                    }
+                    if (expressionI) {
+                      currentVrm.expressionManager.unregisterExpression(
+                        expressionI
+                      );
+                    }
+                    if (expressionU) {
+                      currentVrm.expressionManager.unregisterExpression(
+                        expressionU
+                      );
+                    }
+                    if (expressionE) {
+                      currentVrm.expressionManager.unregisterExpression(
+                        expressionE
+                      );
+                    }
+                    if (expressionO) {
+                      currentVrm.expressionManager.unregisterExpression(
+                        expressionO
+                      );
+                    }
+                    currentVrm.expressionManager.registerExpression(
+                      vrmNewExpressionA
+                    );
+                    currentVrm.expressionManager.registerExpression(
+                      vrmNewExpressionE
+                    );
+                    currentVrm.expressionManager.registerExpression(
+                      vrmNewExpressionI
+                    );
+                    currentVrm.expressionManager.registerExpression(
+                      vrmNewExpressionO
+                    );
+                    currentVrm.expressionManager.registerExpression(
+                      vrmNewExpressionU
+                    );
+                  });
+                  break;
+                }
+              }
+            }
+          }
+        }
+
+        let isProcessed = true;
+        let lastTimeUpdateMotion = 0;
+
+        let isFading = false;
+        let loading = false;
+        let currentAction;
+        let pendingAnimation = null;
+
+        function applyAnimation(bvhFilePath, animationName) {
+          if (!currentVrm) return; // VRMがロードされていなければ何もしない
+          if (currentBvhFilePath === bvhFilePath) return;
+          console.log(currentBvhFilePath);
+          if (mapAction.get(bvhFilePath)) {
+            console.log("haveFile");
+            if (!mixer) {
+              mixer = new THREE.AnimationMixer(currentVrm.scene);
+            }
+            if (isFading || loading) {
+              pendingAnimation = bvhFilePath;
+              return;
+            }
+            synchronizeCrossFade(bvhFilePath, 1);
+          } else {
+            console.log("Dont`t haveFile");
+            loading = true;
+            const loader1 = new BVHLoader();
+            loader1.load(bvhFilePath, function (result) {
+              for (let i = result.clip.tracks.length; i--; ) {
+                let track = result.clip.tracks[i];
+                var value = [];
+                if (
+                  track.name.toLowerCase().match(/.+\.([^?]+)(\?|$)/)[1] ===
+                  "position"
+                ) {
+                  if ([].includes(track.name)) {
+                    continue;
+                  } else {
+                    result.clip.tracks.splice(i, 1);
+                  }
+                } else {
+                  if ([].includes(track.name)) {
+                    result.clip.tracks.splice(i, 1);
+                  } else {
+                    for (var trackValue of track.values) {
+                      var trackValueNew = trackValue;
+                      if (track.values.indexOf(trackValue) % 4 == 3) {
+                        trackValueNew = -trackValue;
+                      }
+                      if (track.values.indexOf(trackValue) % 4 == 1) {
+                        trackValueNew = -trackValue;
+                      }
+                      value.push(trackValueNew);
+                    }
+                  }
+                  track.values = value;
+                  track.values.splice(0, 4);
+                  track.times = track.times.subarray(1);
+                }
+              }
+              if (!mixer) {
+                mixer = new THREE.AnimationMixer(currentVrm.scene);
+              }
+              animationClip = result.clip;
+              animationClip.name = bvhFilePath;
+              animationClip.duration = calculateDuration(result.clip);
+              console.log("duration", animationClip.duration);
+              loading = false;
+              if (isFading || loading) {
+                pendingAnimation = bvhFilePath;
+                return;
+              }
+              mapAction.set(bvhFilePath, animationClip);
+
+              synchronizeCrossFade(bvhFilePath, 1);
+            });
+          }
+          currentBvhFilePath = bvhFilePath;
+        }
+
+        function getRandomBlinkDuration() {
+          let randomDuration = 1000 + Math.floor(Math.random() * 9000);
+          return randomDuration;
+        }
+
+        function synchronizeCrossFade(bvhFilePath, duration) {
+          var currentDate = new Date().getTime();
+          if (currentDate - lastTimeUpdateMotion < 1000) {
+            return;
+          }
+          lastTimeUpdateMotion = currentDate;
+          console.log(new Date().toISOString());
+          // console.log("startAction", startAction);
+          const loadAndApply = (clip) => {
+            if (currentAction) {
+              currentAction.fadeOut(duration);
+              isFading = true;
+              console.log(duration * 1000);
+              setTimeout(() => {
+                console.log("pendingAnimation");
+                isFading = false;
+                if (pendingAnimation) {
+                  applyAnimation(
+                    pendingAnimation,
+                    pendingAnimation.animationName
+                  );
+                  pendingAnimation = null;
+                }
+              }, duration * 1000);
+            }
+            const newAction = mixer.clipAction(clip);
+            newAction.setLoop(THREE.LoopRepeat);
+            newAction.clampWhenFinished = false;
+            console.log("playEndAction", new Date());
+            newAction.reset();
+            newAction.fadeIn(duration);
+            newAction.play();
+
+            currentAction = newAction;
+          };
+
+          if (mapAction.has(bvhFilePath)) {
+            loadAndApply(mapAction.get(bvhFilePath));
+          }
+        }
+
+        function isSameType(pendingAnimation) {
+          var pendingNotNumber = pendingAnimation
+            .replace(/[0-9]/g, "")
+            .replace(".bvh", "");
+          var currentNotNumber = currentBvhFilePath
+            .replace(/[0-9]/g, "")
+            .replace(".bvh", "");
+          console.log(pendingNotNumber === currentNotNumber);
+          return pendingNotNumber === currentNotNumber;
+        }
+
+        function calculateDuration(bvhClip) {
+          const frames = bvhClip.tracks[0].times.length;
+          const frameTime =
+            bvhClip.tracks[0].times[1] - bvhClip.tracks[0].times[0];
+          return frames * frameTime;
+        }
+
+        function voice(mora) {
+          if (currentVrm && currentVrm.expressionManager) {
+            if (currentFacial != "" && currentFacial.includes("Param")) {
+              resetMouth();
+              if (
+                mora == "a" ||
+                mora == "i" ||
+                mora == "e" ||
+                mora == "o" ||
+                mora == "u"
+              ) {
+                resetParam(currentFacial);
+              }
+              resetBlink();
+              resetEmotion();
+            }
+            if (mora == "a") {
+              if (currentFacial != "" && currentFacial.includes("Param")) {
+                currentVrm.expressionManager.setValue(`${currentFacial}A`, 1);
+              } else {
+                currentVrm.expressionManager.setValue("aa", 0.8);
+                currentVrm.expressionManager.setValue("ih", 0);
+                currentVrm.expressionManager.setValue("ee", 0);
+                currentVrm.expressionManager.setValue("oh", 0);
+                currentVrm.expressionManager.setValue("ou", 0);
+              }
+            } else if (mora == "i") {
+              if (currentFacial != "" && currentFacial.includes("Param")) {
+                currentVrm.expressionManager.setValue(`${currentFacial}I`, 1);
+              } else {
+                currentVrm.expressionManager.setValue("aa", 0);
+                currentVrm.expressionManager.setValue("ih", 0.8);
+                currentVrm.expressionManager.setValue("ee", 0);
+                currentVrm.expressionManager.setValue("oh", 0);
+                currentVrm.expressionManager.setValue("ou", 0);
+              }
+            } else if (mora == "e") {
+              if (currentFacial != "" && currentFacial.includes("Param")) {
+                currentVrm.expressionManager.setValue(`${currentFacial}E`, 1);
+              } else {
+                currentVrm.expressionManager.setValue("aa", 0);
+                currentVrm.expressionManager.setValue("ih", 0);
+                currentVrm.expressionManager.setValue("ee", 0.8);
+                currentVrm.expressionManager.setValue("oh", 0);
+                currentVrm.expressionManager.setValue("ou", 0);
+              }
+            } else if (mora == "o") {
+              if (currentFacial != "" && currentFacial.includes("Param")) {
+                currentVrm.expressionManager.setValue(`${currentFacial}O`, 1);
+              } else {
+                currentVrm.expressionManager.setValue("aa", 0);
+                currentVrm.expressionManager.setValue("ih", 0);
+                currentVrm.expressionManager.setValue("ee", 0);
+                currentVrm.expressionManager.setValue("oh", 0.8);
+                currentVrm.expressionManager.setValue("ou", 0);
+              }
+            } else if (mora == "u") {
+              if (currentFacial != "" && currentFacial.includes("Param")) {
+                currentVrm.expressionManager.setValue(`${currentFacial}U`, 1);
+              } else {
+                currentVrm.expressionManager.setValue("aa", 0);
+                currentVrm.expressionManager.setValue("ih", 0);
+                currentVrm.expressionManager.setValue("ee", 0);
+                currentVrm.expressionManager.setValue("oh", 0);
+                currentVrm.expressionManager.setValue("ou", 0.8);
+              }
+            } else {
+              currentVrm.expressionManager.setValue("aa", 0);
+              currentVrm.expressionManager.setValue("ih", 0);
+              currentVrm.expressionManager.setValue("ee", 0);
+              currentVrm.expressionManager.setValue("oh", 0);
+              currentVrm.expressionManager.setValue("ou", 0);
+            }
+          }
+        }
+        function resetMouth() {
+          currentVrm.expressionManager.setValue("aa", 0);
+          currentVrm.expressionManager.setValue("ih", 0);
+          currentVrm.expressionManager.setValue("ee", 0);
+          currentVrm.expressionManager.setValue("oh", 0);
+          currentVrm.expressionManager.setValue("ou", 0);
+        }
+        function resetParam(param) {
+          currentVrm.expressionManager.setValue(`${param}A`, 0);
+          currentVrm.expressionManager.setValue(`${param}I`, 0);
+          currentVrm.expressionManager.setValue(`${param}U`, 0);
+          currentVrm.expressionManager.setValue(`${param}E`, 0);
+          currentVrm.expressionManager.setValue(`${param}O`, 0);
+        }
+
+        function resetEmotion() {
+          currentVrm.expressionManager.setValue("neutral", 0);
+          currentVrm.expressionManager.setValue("relaxed", 0);
+          currentVrm.expressionManager.setValue("happy", 0);
+          currentVrm.expressionManager.setValue("Surprised", 0);
+        }
+
+        function resetBlink() {
+          currentVrm.expressionManager.setValue("blink", 0);
+          currentVrm.expressionManager.setValue("blinkLeft", 0);
+          currentVrm.expressionManager.setValue("blinkRight", 0);
+        }
+        function addHours(date, hours) {
+          date.setTime(date.getTime() + hours * 60 * 60 * 1000);
+
+          return date;
+        }
+
+        function getCurrentTypeHour(japanTimeNow) {
+          let currentHour = japanTimeNow.getHours();
+          if (currentHour >= 6 && currentHour < 18) {
+            return listBackground[0];
+          }
+          return listBackground[1];
+        }
+
+        function randomBlink() {
+          console.log("randomBlink", parameterBlink);
+          const randomNumber = Math.floor(
+            Math.random() * parameterBlink.length
+          );
+          const parameter = parameterBlink[randomNumber];
+          console.log(parameter);
+          if (currentVrm) {
+            console.log("abc");
+            console.log("blink", parameter.blink);
+            console.log("blink", parameter.blinkLeft);
+            console.log("blink", parameter.blinkRight);
+            currentVrm.expressionManager.setValue("blink", parameter.blink);
+            currentVrm.expressionManager.setValue(
+              "blinkLeft",
+              parameter.blinkLeft
+            );
+            currentVrm.expressionManager.setValue(
+              "blinkRight",
+              parameter.blinkRight
+            );
+          }
+        }
+        // const waterSimulation = new WaterSimulation();
+
+        animate();
+        function animate() {
+          setTimeout(() => {
+            animate();
+          }, speedAnimate * 1000);
+          let time = new Date().getTime();
+          renderer.render(scene, camera);
+          if (mixer) mixer.update(speedAnimate * ratioAnimate);
+          if (joinSpringManager) joinSpringManager.update(10 / 1000);
+          if (currentVrm && currentVrm.expressionManager) {
+            currentVrm.expressionManager.update();
+          }
+        }
+      });
+    </script>
+    <script></script>
+  </body>
+</html>
