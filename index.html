@@ -375,7 +375,7 @@
               ([vertexShader, fragmentShader]) => {
                 const material = new THREE.RawShaderMaterial({
                   uniforms: {
-                    light: { value: light },
+                    light: { value: light2 },
                     water: { value: null },
                   },
                   vertexShader: vertexShader,
@@ -523,7 +523,8 @@
             console.log("draw pool and water");
           })();
 
-          window.requestAnimationFrame(animate);
+          renderer.render(scene, camera);
+          // window.requestAnimationFrame(animateWater);
         }
 
         function changeBackground() {
